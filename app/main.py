@@ -1,6 +1,9 @@
 from fastapi import FastAPI, status, HTTPException
 from pydantic import BaseModel, Field
 from random import randrange
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from time import sleep
 
 
 class Post(BaseModel):
@@ -12,24 +15,48 @@ class Post(BaseModel):
     published: bool = True
 
 
-all_posts = [
-    Post(id=1, title='dogs', content='3 cried')
-]
-
-
 app = FastAPI()
+
+
+while True:
+    try:
+        conn = psycopg2.connect(
+            host='localhost',
+            database='fastapi',
+            user='postgres',
+            password='...',                         #remove
+            cursor_factory=RealDictCursor,
+        )
+        cursor = conn.cursor()
+        print('Succesfully connected to db')
+        break
+    except Exception as e:
+        print('failed to connect to db:',e)
+        sleep(2)
 
 
 # get
 @app.get('/posts')
 def get_posts():
-    return all_posts
+    cursor.execute(
+        """
+        SELECT * FROM posts
+        """
+    )
+    return cursor.fetchall()
 
 @app.get('/posts/{id}')
 def get_post(id: int):
-    for post in all_posts:
-        if post.id == int(id): return post
+    cursor.execute(
+        """
+        SELECT * FROM posts
+        WHERE id = %s
+        """,(id,)
+    )
 
+    post = cursor.fetchone()
+    if post: return post
+    
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail='not found'
@@ -38,21 +65,32 @@ def get_post(id: int):
 # post
 @app.post('/posts', status_code=status.HTTP_201_CREATED)
 def create_posts(post: Post):
-    all_posts.append(post)
-    return {'data': post}
+    cursor.execute(
+        """
+        INSERT INTO posts
+            (title, content, published)
+        VALUES
+            (%s, %s, %s)
+        RETURNING *;
+        """, (post.title, post.content, post.published)
+    )
+    conn.commit()
+    return cursor.fetchone()
 
 
 # delete
 @app.delete('/posts/{id}', status_code=status.HTTP_204_NO_CONTENT)
 def delete_post(id: int):
-    post_index = None
-    for index, post in enumerate(all_posts):
-        if post.id == int(id):
-            post_index = index
-            break
+    cursor.execute(
+        """
+        DELETE FROM posts
+        WHERE id = %s
+        RETURNING *;
+        """, (id,)
+    )
     
-    if post_index:
-        del all_posts[post_index]
+    if cursor.fetchone():
+        conn.commit()
         return
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -62,17 +100,20 @@ def delete_post(id: int):
 # update
 @app.put('/posts/{id}', )
 def update_post(id: int, post: Post):
-    post_index = None
-    for index, p in enumerate(all_posts):
-        if p.id == int(id):
-            post_index = index
-            break
+    cursor.execute(
+        """
+        UPDATE posts
+        SET title = %s, content = %s, published = %s
+        WHERE id = %s
+        RETURNING *;
+        """, (
+            post.title, post.content, post.published, id
+        )
+    )
     
-    if post_index is not None:
-        post.id = all_posts[post_index].id
-        all_posts[post_index] = post
-        print(all_posts)
-        return
+    if updated_post := cursor.fetchone():
+        conn.commit()
+        return updated_post
     
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
